@@ -345,7 +345,7 @@ export class GameTimerService implements OnModuleInit, OnModuleDestroy {
           await this.storeGameInDatabase(gameAddress, result, true);
         } else {
           this.logger.log(
-            `🔄 Game ${gameAddress} already processed, skipping storage and broadcast`
+            `🔄 Game ${gameAddress} already processed, skipping storage into postgres`
           );
         }
 

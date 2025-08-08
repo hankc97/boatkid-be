@@ -6,6 +6,9 @@ import {
   TransactionInstruction,
   Transaction,
   SystemProgram,
+  ComputeBudgetProgram,
+  TransactionMessage,
+  VersionedTransaction,
 } from "@solana/web3.js";
 import {
   getAssociatedTokenAddressSync,
@@ -46,6 +49,61 @@ const prepareTransaction = async ({
   transaction.add(...instructions);
 
   return { transaction };
+};
+
+// Helper function to get simulation units for transaction optimization
+const getSimulationUnits = async (
+  connection: Connection,
+  instructions: TransactionInstruction[],
+  payer: PublicKey
+): Promise<number | undefined> => {
+  const testInstructions = [
+    ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }),
+    ...instructions,
+  ];
+
+  const testVersionedTxn = new VersionedTransaction(
+    new TransactionMessage({
+      instructions: testInstructions,
+      payerKey: payer,
+      recentBlockhash: PublicKey.default.toString(),
+    }).compileToV0Message()
+  );
+
+  try {
+    const simulation = await connection.simulateTransaction(testVersionedTxn, {
+      replaceRecentBlockhash: true,
+      sigVerify: false,
+    });
+
+    if (simulation.value.err) {
+      // Note: Using console.log here since this is a static helper function outside of class context
+      console.log("Simulation failed during compute unit estimation:", {
+        error: simulation.value.err,
+        logs: simulation.value.logs,
+        unitsConsumed: simulation.value.unitsConsumed,
+      });
+
+      // If it's just insufficient funds for rent, we can still use a reasonable estimate
+      if (
+        typeof simulation.value.err === "object" &&
+        simulation.value.err !== null &&
+        "InsufficientFundsForRent" in simulation.value.err
+      ) {
+        console.log(
+          "Using estimated units despite InsufficientFundsForRent error"
+        );
+        return 200_000; // Reasonable estimate for game transactions
+      }
+
+      return undefined;
+    }
+
+    return simulation.value.unitsConsumed;
+  } catch (error) {
+    console.log("Error during simulation:", error);
+    return undefined;
+  }
 };
 
 export interface JoinGameRequest {
@@ -338,10 +396,38 @@ export class UserService implements OnApplicationBootstrap {
           .instruction()
       );
 
+      // Get compute units for transaction optimization
+      this.logger.log("Simulating transaction to get compute units");
+      let units = await getSimulationUnits(
+        connection,
+        instructions,
+        playerPubkey
+      );
+
+      // Fallback to default compute units if simulation fails
+      if (units === undefined) {
+        units = 200_000; // Default compute units for game transactions
+        this.logger.warn(
+          "Simulation failed, using default compute units: 200,000"
+        );
+      } else {
+        this.logger.log(`Simulation successful, using compute units: ${units}`);
+      }
+
+      // Add compute budget instructions at the beginning
+      const computeBudgetInstructions = [
+        ComputeBudgetProgram.setComputeUnitLimit({
+          units: Math.ceil(units * 1.05),
+        }), // 5% margin of error
+      ];
+
+      // Combine compute budget instructions with game instructions
+      const allInstructions = [...computeBudgetInstructions, ...instructions];
+
       // Build transaction
       const { transaction } = await prepareTransaction({
         payer: playerPubkey,
-        instructions,
+        instructions: allInstructions,
       });
 
       // Sign with operator keypair only (player will sign on frontend)
