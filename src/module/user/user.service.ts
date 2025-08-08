@@ -178,6 +178,7 @@ export class UserService implements OnApplicationBootstrap {
   private readonly logger = new Logger(UserService.name);
   private readonly maxBetSize: number;
   private readonly maxParticipants: number;
+  private readonly redisTtl: number;
 
   constructor(
     private readonly redisService: RedisService,
@@ -186,6 +187,7 @@ export class UserService implements OnApplicationBootstrap {
   ) {
     this.maxBetSize = 10 * Math.pow(10, 6); // 10 tokens max bet
     this.maxParticipants = 15; // 15 players max
+    this.redisTtl = 60 * 60 * 24; // 24 hours TTL
   }
 
   // Initialize service and restore timers
@@ -721,18 +723,18 @@ export class UserService implements OnApplicationBootstrap {
       lastSyncedAt: Date.now(),
     };
 
-    // Store in Redis with 2 hour TTL
+    // Store in Redis with 24 hour TTL
     await this.redisService.set(
       gameStateKey,
       JSON.stringify(gameState),
-      60 * 60 * 2
+      this.redisTtl
     );
 
     // Store players separately
     await this.redisService.set(
       playersKey,
       JSON.stringify(onChainData.participants),
-      60 * 60 * 2
+      this.redisTtl
     );
 
     // Update current game reference if this is the latest active game
@@ -740,7 +742,7 @@ export class UserService implements OnApplicationBootstrap {
       onChainData.status === "initialized" ||
       onChainData.status === "started"
     ) {
-      await this.redisService.set(CURRENT_GAME_KEY, gameAddress, 60 * 60 * 2);
+      await this.redisService.set(CURRENT_GAME_KEY, gameAddress, this.redisTtl);
     }
 
     // Cancel timer if game is resolved or full
