@@ -14,6 +14,10 @@ import {
   GAME_TIMER_STARTED_KEY,
 } from "../redis/redis.keys";
 import { AdminService, GameResolutionResult } from "../admin/admin.service";
+import {
+  DatabaseService,
+  GameStorageData,
+} from "../../kysely/database.service";
 
 export interface GameTimer {
   gameAddress: string;
@@ -46,14 +50,21 @@ export interface GameState {
 @Injectable()
 export class GameTimerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(GameTimerService.name);
-  private readonly activeTimers = new Map<string, NodeJS.Timeout>();
+  private readonly activeTimers = new Map<
+    string,
+    {
+      intervalId: NodeJS.Timeout;
+      timeoutId: NodeJS.Timeout;
+    }
+  >();
   // private readonly TIMER_DURATION = 60000; // 1 minute in milliseconds
-  private readonly TIMER_DURATION = 20000; // 20 seconds in milliseconds
+  private readonly TIMER_DURATION = 30000; // 30 seconds in milliseconds
 
   constructor(
     private readonly redisService: RedisService,
     private readonly pusherService: PusherService,
-    private readonly adminService: AdminService
+    private readonly adminService: AdminService,
+    private readonly databaseService: DatabaseService
   ) {}
 
   // Called after module initialization to restore active timers
@@ -69,8 +80,9 @@ export class GameTimerService implements OnModuleInit, OnModuleDestroy {
   async onModuleDestroy(): Promise<void> {
     try {
       // Clear all active timers
-      for (const [gameAddress, intervalId] of this.activeTimers) {
-        clearInterval(intervalId);
+      for (const [gameAddress, timers] of this.activeTimers) {
+        clearInterval(timers.intervalId);
+        clearTimeout(timers.timeoutId);
         this.logger.log(
           `Cleared timer for game ${gameAddress} on module destroy`
         );
@@ -98,10 +110,41 @@ export class GameTimerService implements OnModuleInit, OnModuleDestroy {
         gameState.currentParticipants >= 2 &&
         (gameState.status === "waiting" || gameState.status === "active")
       ) {
-        await this.startGameTimer(gameState.gameAddress);
+        await this.startOrResetGameTimer(gameState.gameAddress);
       }
     } catch (error) {
       this.logger.error("Error checking and starting game timer:", error);
+    }
+  }
+
+  // Start or reset the auto-resolution timer for a game (resets to full duration if already running)
+  async startOrResetGameTimer(gameAddress: string): Promise<void> {
+    try {
+      // Check if timer already exists
+      const timerStartedKey = `${GAME_TIMER_STARTED_KEY}:${gameAddress}`;
+      const timerAlreadyStarted = await this.redisService.get(timerStartedKey);
+
+      if (timerAlreadyStarted) {
+        this.logger.log(
+          `Timer already running for game ${gameAddress} - resetting to full duration (${
+            this.TIMER_DURATION / 1000
+          }s)`
+        );
+
+        // Cancel the existing timer
+        await this.cancelGameTimer(gameAddress);
+
+        // Broadcast timer reset event
+        await this.broadcastTimerReset(gameAddress);
+      }
+
+      // Start a fresh timer (either new or reset)
+      await this.startGameTimer(gameAddress);
+    } catch (error) {
+      this.logger.error(
+        `Error starting or resetting game timer for ${gameAddress}:`,
+        error
+      );
     }
   }
 
@@ -164,9 +207,11 @@ export class GameTimerService implements OnModuleInit, OnModuleDestroy {
     gameAddress: string,
     gameTimer: GameTimer
   ): Promise<void> {
-    // Clear any existing timer for this game
+    // Clear any existing timers for this game
     if (this.activeTimers.has(gameAddress)) {
-      clearInterval(this.activeTimers.get(gameAddress));
+      const existingTimers = this.activeTimers.get(gameAddress);
+      clearInterval(existingTimers.intervalId);
+      clearTimeout(existingTimers.timeoutId);
     }
 
     // Broadcast every 1 seconds
@@ -180,8 +225,7 @@ export class GameTimerService implements OnModuleInit, OnModuleDestroy {
         if (remainingTime <= 0) {
           // Timer expired - trigger game resolution
           await this.handleTimerExpiration(gameAddress);
-          clearInterval(intervalId);
-          this.activeTimers.delete(gameAddress);
+          // Note: handleTimerExpiration already clears the timers
           return;
         }
 
@@ -195,15 +239,14 @@ export class GameTimerService implements OnModuleInit, OnModuleDestroy {
       }
     }, broadcastInterval);
 
-    // Store the interval ID
-    this.activeTimers.set(gameAddress, intervalId);
-
     // Also set a final timeout to ensure cleanup
-    setTimeout(async () => {
+    const timeoutId = setTimeout(async () => {
       try {
         await this.handleTimerExpiration(gameAddress);
         if (this.activeTimers.has(gameAddress)) {
-          clearInterval(this.activeTimers.get(gameAddress));
+          const timers = this.activeTimers.get(gameAddress);
+          clearInterval(timers.intervalId);
+          clearTimeout(timers.timeoutId);
           this.activeTimers.delete(gameAddress);
         }
       } catch (error) {
@@ -213,6 +256,9 @@ export class GameTimerService implements OnModuleInit, OnModuleDestroy {
         );
       }
     }, this.TIMER_DURATION + 1000); // Add 1 second buffer
+
+    // Store both the interval and timeout IDs
+    this.activeTimers.set(gameAddress, { intervalId, timeoutId });
   }
 
   // Update game state with timer information
@@ -259,9 +305,11 @@ export class GameTimerService implements OnModuleInit, OnModuleDestroy {
         `Timer expired for game ${gameAddress} - triggering auto-resolution`
       );
 
-      // Clear interval timer immediately to prevent multiple calls
+      // Clear both interval and timeout timers immediately to prevent multiple calls
       if (this.activeTimers.has(gameAddress)) {
-        clearInterval(this.activeTimers.get(gameAddress));
+        const timers = this.activeTimers.get(gameAddress);
+        clearInterval(timers.intervalId);
+        clearTimeout(timers.timeoutId);
         this.activeTimers.delete(gameAddress);
       }
 
@@ -288,6 +336,19 @@ export class GameTimerService implements OnModuleInit, OnModuleDestroy {
           `✅ Game ${gameAddress} resolved successfully by timer - Winner: ${result.winner}, TX: ${result.transactionSignature}`
         );
 
+        // Store game data in PostgreSQL and broadcast only if not already stored
+        const alreadyStored = await this.databaseService.isGameAlreadyStored(
+          gameAddress
+        );
+        if (!alreadyStored) {
+          // Store game data in PostgreSQL
+          await this.storeGameInDatabase(gameAddress, result, true);
+        } else {
+          this.logger.log(
+            `🔄 Game ${gameAddress} already processed, skipping storage and broadcast`
+          );
+        }
+
         // Broadcast game resolution success to clients
         await this.broadcastGameResolved(gameAddress, result);
       } catch (resolutionError) {
@@ -312,6 +373,9 @@ export class GameTimerService implements OnModuleInit, OnModuleDestroy {
           );
           // Game resolution failed - could implement retry logic or manual intervention alerts here
         }
+
+        // For any resolution error, we should not attempt storage or broadcast
+        // as the game state is unclear or already handled
       }
     } catch (error) {
       this.logger.error(
@@ -331,8 +395,9 @@ export class GameTimerService implements OnModuleInit, OnModuleDestroy {
         gameAddress,
         timer: gameTimer,
         remainingTime: gameTimer.duration,
-        message:
-          "Auto-resolution timer started - game will resolve automatically in 1 minute",
+        message: `Auto-resolution timer started - game will resolve automatically in ${
+          this.TIMER_DURATION / 1000
+        } seconds`,
         timestamp: Date.now(),
       };
 
@@ -469,6 +534,40 @@ export class GameTimerService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  // Broadcast timer reset event
+  private async broadcastTimerReset(gameAddress: string): Promise<void> {
+    try {
+      const broadcastData = {
+        gameAddress,
+        message: `Timer reset to ${
+          this.TIMER_DURATION / 1000
+        } seconds due to new transaction`,
+        duration: this.TIMER_DURATION,
+        timestamp: Date.now(),
+      };
+
+      // Broadcast to main game channel
+      await this.pusherService.broadcastGameUpdate(
+        "timer-reset",
+        broadcastData
+      );
+
+      // Broadcast to specific game channel
+      await this.pusherService.broadcastToGameChannel(
+        gameAddress,
+        "timer-reset",
+        broadcastData
+      );
+
+      this.logger.log(`Broadcasted timer reset for game ${gameAddress}`);
+    } catch (error) {
+      this.logger.error(
+        `Error broadcasting timer reset for ${gameAddress}:`,
+        error
+      );
+    }
+  }
+
   // Get timer state for a game
   async getGameTimer(gameAddress: string): Promise<GameTimer | null> {
     try {
@@ -534,9 +633,11 @@ export class GameTimerService implements OnModuleInit, OnModuleDestroy {
   // Cancel timer for a game (useful if game gets resolved manually or reaches max players)
   async cancelGameTimer(gameAddress: string): Promise<void> {
     try {
-      // Clear interval timer
+      // Clear both interval and timeout timers
       if (this.activeTimers.has(gameAddress)) {
-        clearInterval(this.activeTimers.get(gameAddress));
+        const timers = this.activeTimers.get(gameAddress);
+        clearInterval(timers.intervalId);
+        clearTimeout(timers.timeoutId);
         this.activeTimers.delete(gameAddress);
       }
 
@@ -645,6 +746,65 @@ export class GameTimerService implements OnModuleInit, OnModuleDestroy {
         `Error restoring timer for game ${gameState.gameAddress}:`,
         error
       );
+    }
+  }
+
+  // Store game data in PostgreSQL after resolution
+  private async storeGameInDatabase(
+    gameAddress: string,
+    resolutionResult: GameResolutionResult,
+    autoResolved: boolean
+  ): Promise<void> {
+    try {
+      // Get current game state from Redis
+      const gameStateKey = `${GAME_STATE_KEY}:${gameAddress}`;
+      const gameStateJson = await this.redisService.get(gameStateKey);
+
+      if (!gameStateJson) {
+        this.logger.warn(
+          `No game state found in Redis for ${gameAddress}, skipping database storage`
+        );
+        return;
+      }
+
+      const gameState: GameState = JSON.parse(gameStateJson);
+
+      // Get timer information
+      const gameTimer = await this.getGameTimer(gameAddress);
+
+      // Get participant data - we need to fetch this from the admin service or blockchain
+      // For now, we'll use the game state players, but ideally we'd get the full participant data
+      const participants = gameState.players || [];
+
+      // Create storage data
+      const storageData: GameStorageData = {
+        gameState,
+        resolutionResult,
+        participants: participants.map((player, index) => ({
+          publicKey: { toString: () => player.betPda || `unknown-${index}` },
+          account: {
+            user: { toString: () => player.walletAddress },
+            amount: { toNumber: () => player.betAmount * Math.pow(10, 6) }, // Convert back to raw amount
+            token: { toString: () => player.tokenMint },
+            game: { toString: () => gameAddress },
+          },
+        })),
+        autoResolved,
+        timerStartedAt: gameTimer?.startedAt,
+        timerEndsAt: gameTimer?.endsAt,
+        timerDuration: gameTimer?.duration,
+      };
+
+      // Store in database
+      await this.databaseService.storeHistoricalGame(storageData);
+
+      this.logger.log(`📊 Game ${gameAddress} stored in PostgreSQL database`);
+    } catch (error) {
+      this.logger.error(
+        `Failed to store game ${gameAddress} in database:`,
+        error
+      );
+      // Don't throw error here to avoid breaking game resolution flow
     }
   }
 }

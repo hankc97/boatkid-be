@@ -62,8 +62,69 @@ export interface Admin extends BaseType {
   wallet_address: string;
 }
 
+export interface BoatkidHistoricalGames extends BaseType {
+  // Game identification
+  game_address: string;
+  game_id: string;
+  nonce: number;
+
+  // Game configuration
+  max_participants: number;
+  max_bet_size: Numeric;
+
+  // Game lifecycle
+  status: string; // waiting, active, finished
+  on_chain_status: string; // initialized, started, resolved
+  created_at_timestamp: Int8; // unix timestamp from blockchain
+  resolved_at: Timestamp;
+
+  // Game outcome
+  winner_address: string;
+  transaction_signature: string;
+  total_participants: number;
+  total_prize_pool: Numeric; // in token units
+  total_prize_pool_raw: Int8; // raw amount from blockchain
+
+  // Timer information
+  timer_started_at: Int8 | null;
+  timer_ends_at: Int8 | null;
+  timer_duration: number | null;
+  auto_resolved: boolean;
+
+  // Additional metadata
+  participants_data: Json | null; // store participant info as JSON
+  game_state_snapshot: Json | null; // store final game state
+}
+
+export interface BoatkidHistoricalPlayers extends BaseType {
+  // Player identification
+  player_address: string;
+  game_address: string;
+  game_id: string;
+
+  // Bet information
+  bet_amount: Numeric; // in token units
+  bet_amount_raw: Int8; // raw amount from blockchain
+  token_mint: string;
+  bet_pda: string | null;
+
+  // Game participation
+  joined_at: Int8; // unix timestamp from blockchain
+  player_position: number; // 1, 2, 3, etc.
+  is_winner: boolean;
+
+  // Probability and odds
+  win_probability: Numeric | null; // calculated win chance
+  bet_percentage: Numeric | null; // percentage of total pot
+
+  // Additional data
+  player_data: Json | null; // store additional player info
+}
+
 export interface DB {
   nochill_races: Races;
   nochill_racers: Racers;
   nochill_admin: Admin;
+  boatkid_historical_games: BoatkidHistoricalGames;
+  boatkid_historical_players: BoatkidHistoricalPlayers;
 }

@@ -16,6 +16,13 @@ import { BN, Wallet } from "@coral-xyz/anchor";
 import base58 from "bs58";
 import { getProgram, PROGRAM_ID } from "../../program/program";
 import { MINT } from "../user/user.service";
+import {
+  DatabaseService,
+  GameStorageData,
+} from "../../kysely/database.service";
+import { RedisService } from "../redis/redis.service";
+import { GAME_STATE_KEY } from "../redis/redis.keys";
+import { GameState } from "../user/game-timer.service";
 
 interface Participant {
   publicKey: PublicKey;
@@ -39,6 +46,11 @@ export interface GameResolutionResult {
 export class AdminService {
   private readonly logger = new Logger(AdminService.name);
   private readonly resolvingGames = new Set<string>();
+
+  constructor(
+    private readonly databaseService: DatabaseService,
+    private readonly redisService: RedisService
+  ) {}
 
   private async setupProgram() {
     // Setup connection
@@ -258,19 +270,84 @@ export class AdminService {
         `Game resolved successfully! Transaction: ${txSignature}`
       );
 
-      return {
+      const result: GameResolutionResult = {
         success: true,
         transactionSignature: txSignature,
         winner: winner.account.user.toString(),
         participants: gameParticipants.length,
         totalPrizePool: totalPrizePool / Math.pow(10, 6), // Convert to readable format
       };
+
+      // Store game data in PostgreSQL only if not already stored
+      const alreadyStored = await this.databaseService.isGameAlreadyStored(
+        gameAddress
+      );
+      if (!alreadyStored) {
+        // Store game data in PostgreSQL
+        await this.storeResolvedGameInDatabase(
+          gameAddress,
+          result,
+          gameParticipants
+        );
+      } else {
+        this.logger.log(
+          `🔄 Game ${gameAddress} already processed, skipping storage`
+        );
+      }
+
+      return result;
     } catch (error) {
       this.logger.error("Error resolving game:", error);
       throw error;
     } finally {
       // Always remove from resolving set
       this.resolvingGames.delete(gameAddress);
+    }
+  }
+
+  // Store manually resolved game in PostgreSQL
+  private async storeResolvedGameInDatabase(
+    gameAddress: string,
+    resolutionResult: GameResolutionResult,
+    participants: Participant[]
+  ): Promise<void> {
+    try {
+      // Get current game state from Redis
+      const gameStateKey = `${GAME_STATE_KEY}:${gameAddress}`;
+      const gameStateJson = await this.redisService.get(gameStateKey);
+
+      if (!gameStateJson) {
+        this.logger.warn(
+          `No game state found in Redis for ${gameAddress}, skipping database storage`
+        );
+        return;
+      }
+
+      const gameState: GameState = JSON.parse(gameStateJson);
+
+      // Create storage data
+      const storageData: GameStorageData = {
+        gameState,
+        resolutionResult,
+        participants,
+        autoResolved: false, // This is a manual resolution
+        timerStartedAt: gameState.timerStartedAt,
+        timerEndsAt: gameState.timerEndsAt,
+        timerDuration: gameState.timerDuration,
+      };
+
+      // Store in database
+      await this.databaseService.storeHistoricalGame(storageData);
+
+      this.logger.log(
+        `📊 Manually resolved game ${gameAddress} stored in PostgreSQL database`
+      );
+    } catch (error) {
+      this.logger.error(
+        `Failed to store manually resolved game ${gameAddress} in database:`,
+        error
+      );
+      // Don't throw error here to avoid breaking game resolution flow
     }
   }
 }

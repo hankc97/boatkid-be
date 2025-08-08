@@ -13,11 +13,11 @@
     "start:debug": "nest start --debug --watch",
     "start:prod": "node dist/main",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
-    "db:init": "ts-node ./src/kysely/db-migrate.ts init -e ./.env -d ./src/kysely/migrations -c twitter",
-    "db:gen": "ts-node ./src/kysely/db-migrate.ts generate -e ./.env -d ./src/kysely/migrations -c twitter",
-    "db:migrate": "ts-node ./src/kysely/db-migrate.ts migrate -e ./.env -d ./src/kysely/migrations -c twitter",
-    "db:undo": "ts-node ./src/kysely/db-migrate.ts undo -e ./.env -d ./src/kysely/migrations -c twitter",
-    "db:reset": "ts-node ./src/kysely/db-migrate.ts reset -e ./.env -d ./src/kysely/migrations -c twitter"
+    "db:init": "ts-node ./src/kysely/db-migrate.ts init -e ./.env -d ./src/kysely/migrations -c boatkid",
+    "db:gen": "ts-node ./src/kysely/db-migrate.ts generate -e ./.env -d ./src/kysely/migrations -c boatkid",
+    "db:migrate": "ts-node ./src/kysely/db-migrate.ts migrate -e ./.env -d ./src/kysely/migrations -c boatkid",
+    "db:undo": "ts-node ./src/kysely/db-migrate.ts undo -e ./.env -d ./src/kysely/migrations -c boatkid",
+    "db:reset": "ts-node ./src/kysely/db-migrate.ts reset -e ./.env -d ./src/kysely/migrations -c boatkid"
   },
   "dependencies": {
     "@commander-js/extra-typings": "13.0.0",
