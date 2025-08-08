@@ -182,12 +182,10 @@ export class UserService implements OnApplicationBootstrap {
   constructor(
     private readonly redisService: RedisService,
     private readonly pusherService: PusherService,
-    private readonly gameTimerService: GameTimerService,
-    maxBetSize: number = 10 * Math.pow(10, 6), // 10 tokens max bet
-    maxParticipants: number = 15 // 15 players max
+    private readonly gameTimerService: GameTimerService
   ) {
-    this.maxBetSize = maxBetSize;
-    this.maxParticipants = maxParticipants;
+    this.maxBetSize = 10 * Math.pow(10, 6); // 10 tokens max bet
+    this.maxParticipants = 15; // 15 players max
   }
 
   // Initialize service and restore timers
