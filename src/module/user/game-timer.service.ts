@@ -57,7 +57,7 @@ export class GameTimerService implements OnModuleInit, OnModuleDestroy {
       timeoutId: NodeJS.Timeout;
     }
   >();
-  private readonly TIMER_DURATION = 5 * 60 * 1000; // 5 minutes in milliseconds
+  private readonly TIMER_DURATION = 3 * 60 * 1000; // 3 minutes in milliseconds
   // private readonly TIMER_DURATION = 30000; // 30 seconds in milliseconds
 
   constructor(

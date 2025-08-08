@@ -176,12 +176,19 @@ export interface GameState {
 @Injectable()
 export class UserService implements OnApplicationBootstrap {
   private readonly logger = new Logger(UserService.name);
+  private readonly maxBetSize: number;
+  private readonly maxParticipants: number;
 
   constructor(
     private readonly redisService: RedisService,
     private readonly pusherService: PusherService,
-    private readonly gameTimerService: GameTimerService
-  ) {}
+    private readonly gameTimerService: GameTimerService,
+    maxBetSize: number = 10 * Math.pow(10, 6), // 10 tokens max bet
+    maxParticipants: number = 15 // 15 players max
+  ) {
+    this.maxBetSize = maxBetSize;
+    this.maxParticipants = maxParticipants;
+  }
 
   // Initialize service and restore timers
   async onApplicationBootstrap(): Promise<void> {
@@ -280,9 +287,7 @@ export class UserService implements OnApplicationBootstrap {
       let shouldStartNewGame = false;
       let gameToJoin = null;
 
-      // Game parameters
-      const maxBetSize = 10 * Math.pow(10, 6); // 10 tokens max bet
-      const maxParticipants = 4; // 4 players max
+      // Game parameters are now class properties
 
       if (configs.length === 0) {
         this.logger.log("No global config found. Cannot proceed.");
@@ -355,7 +360,7 @@ export class UserService implements OnApplicationBootstrap {
         // Add start game instruction
         instructions.push(
           await program.methods
-            .startGame(new BN(maxBetSize), maxParticipants)
+            .startGame(new BN(this.maxBetSize), this.maxParticipants)
             .accounts({
               operator: operatorKeypair.publicKey,
             })
